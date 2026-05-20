@@ -1,4 +1,4 @@
-NOTE: THIS README IS NOT UPDATED WITH THE CHANGES MADE TO THE INITIAL CODE.
+<h1 align="center">NOTE: THIS README IS NOT UPDATED WITH THE CHANGES MADE TO THE INITIAL CODE.</h1>
 
 <p align="center">
  <img height=350px src="./simulation-output.png" alt="Simulation output">
