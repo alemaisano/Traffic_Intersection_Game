@@ -1,3 +1,5 @@
+NOTE: THIS README IS NOT UPDATED WITH THE CHANGES MADE TO THE INITIAL CODE.
+
 <p align="center">
  <img height=350px src="./simulation-output.png" alt="Simulation output">
 </p>
