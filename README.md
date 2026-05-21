@@ -93,4 +93,4 @@ Scores are stored in `scores.json` and accumulate across sessions (up to 300 run
 
 ## License
 
-No license yet. Please contact the author for any question or issue!
+No license yet. Please contact the authors (Alessandro Maisano + Fei Fan) for any question or issue!
