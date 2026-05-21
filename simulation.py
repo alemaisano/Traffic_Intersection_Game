@@ -34,6 +34,12 @@ class SimulationEngine:
         self.done       = False
         self.metrics    = None
 
+        # Per-intersection state counters sampled every 10 steps (≈1 s each)
+        self.iid_time_stats = {
+            iid: {'bottleneck': 0, 'queued': 0, 'clear': 0}
+            for iid in self.network.intersection_nodes
+        }
+
     # ------------------------------------------------------------------
     def step(self):
         if self.done:
@@ -66,10 +72,26 @@ class SimulationEngine:
         self.sim_time   += dt
         self.step_count += 1
 
+        # Sample intersection states once per simulated second
+        if self.step_count % 10 == 0:
+            q_now = {iid: 0 for iid in self.network.intersection_nodes}
+            for seg in self.network.segments.values():
+                if seg.enters_intersection in q_now:
+                    q_now[seg.enters_intersection] += len(seg.vehicles)
+            max_q = max(q_now.values()) if q_now else 0
+            for iid, q in q_now.items():
+                if q == 0:
+                    self.iid_time_stats[iid]['clear'] += 1
+                elif max_q > 0 and q == max_q:
+                    self.iid_time_stats[iid]['bottleneck'] += 1
+                else:
+                    self.iid_time_stats[iid]['queued'] += 1
+
         active_or_pending = any(v.state in (PENDING, ACTIVE) for v in self.vehicles)
         if self.sim_time >= HORIZON or not active_or_pending:
             self.done    = True
             self.metrics = compute_metrics(self.vehicles, self.network)
+            self.metrics['iid_time_stats'] = self.iid_time_stats
 
     # ------------------------------------------------------------------
     def active_vehicles(self):

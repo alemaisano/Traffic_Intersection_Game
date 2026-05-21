@@ -14,7 +14,7 @@ import pygame
 from config import (
     SCREEN_W, SCREEN_H, FPS, HORIZON,
     PIXELS_PER_METER, LANE_OFFSET_PX, INTERSECTION_HALF_PX,
-    BLACK, WHITE, GRAY, DARK_GRAY, ROAD_C, CENTRE_C, INT_C,
+    WHITE, GRAY, DARK_GRAY, ROAD_C, CENTRE_C, INT_C,
     SIG_RED, SIG_YEL, SIG_GRN,
     UI_BG, UI_PANEL, HIGHLIGHT, TEXT_C, TEXT_DIM, ACCENT,
 )
@@ -483,13 +483,11 @@ class RunningScreen:
 # Results-screen network snapshot (queue overlay)
 # ──────────────────────────────────────────────────────────────────────
 
-def _draw_results_network(surf, font_sm, network, queue_stats, bottleneck, ox, oy, pw, ph):
+def _draw_results_network(surf, font_sm, network, iid_time_stats, ox, oy, pw, ph):
     """
-    Mini network map for the Results screen.
-    Intersection boxes are coloured green / yellow / red by residual queue size.
-    Queue count is shown below each box; bottleneck gets a red outline.
+    Mini network map coloured by how often each intersection was the bottleneck
+    during the simulation. Each box shows seconds as bottleneck (bold).
     """
-    # Leave room at top for 2-line title, at bottom for legend
     TITLE_H  = 34
     LEGEND_H = 22
 
@@ -497,9 +495,9 @@ def _draw_results_network(surf, font_sm, network, queue_stats, bottleneck, ox, o
     pygame.draw.rect(surf, GRAY,     (ox, oy, pw, ph), 1, border_radius=6)
 
     # Two-line title
-    _text(surf, font_sm, 'Residual queues at end of simulation',
+    _text(surf, font_sm, 'Intersection congestion during the simulation',
           ox + pw // 2, oy + 4, TEXT_C, anchor='midtop')
-    _text(surf, font_sm, 'Vehicles still waiting at each intersection when time ran out',
+    _text(surf, font_sm, 'Seconds each intersection spent as bottleneck / queued / clear',
           ox + pw // 2, oy + 19, TEXT_DIM, anchor='midtop')
 
     node_px = network.node_pixels
@@ -510,11 +508,10 @@ def _draw_results_network(surf, font_sm, network, queue_stats, bottleneck, ox, o
     span_x = max(1, max_x - min_x)
     span_y = max(1, max_y - min_y)
 
-    # Map area sits between title and legend
-    margin  = 32
-    map_y0  = oy + TITLE_H
-    map_h   = ph - TITLE_H - LEGEND_H
-    map_w   = pw
+    margin = 32
+    map_y0 = oy + TITLE_H
+    map_h  = ph - TITLE_H - LEGEND_H
+    map_w  = pw
 
     def sp(name):
         px, py = node_px[name]
@@ -531,33 +528,41 @@ def _draw_results_network(surf, font_sm, network, queue_stats, bottleneck, ox, o
         drawn.add(key)
         pygame.draw.line(surf, ROAD_C, sp(a), sp(b), 5)
 
-    # Boundary zones (small dots)
+    # Boundary zones
     for zone in network.boundary_zones:
         cx, cy = sp(zone)
         pygame.draw.circle(surf, GRAY, (cx, cy), 4)
 
-    # Intersection boxes — coloured by queue status
-    BOX      = 13
-    font_num = pygame.font.SysFont(None, 22, bold=True)
+    # Three coloured mini-boxes per intersection: R=bottleneck, Y=queued, G=clear
+    MBOX     = 10          # half-size → 20×20 px per box
+    HGAP     = 3           # gap between boxes
+    BOX_W    = MBOX * 2
+    TOTAL_BW = 3 * BOX_W + 2 * HGAP   # 66 px group width
+    font_num  = pygame.font.SysFont(None, 14, bold=True)
+    TEXT_DARK = (20, 20, 20)
+
     for iid in sorted(network.intersection_nodes):
         cx, cy = sp(iid)
-        q      = queue_stats.get(iid, 0)
-        is_bot = (iid == bottleneck and q > 0)
-        fill   = SIG_RED if is_bot else (SIG_YEL if q > 0 else SIG_GRN)
-        pygame.draw.rect(surf, fill, (cx - BOX, cy - BOX, BOX * 2, BOX * 2))
-        pygame.draw.rect(surf, GRAY, (cx - BOX, cy - BOX, BOX * 2, BOX * 2), 1)
-        if is_bot:
-            pygame.draw.rect(surf, SIG_RED,
-                             (cx - BOX - 3, cy - BOX - 3, BOX*2+6, BOX*2+6), 2)
-        # IID label above the box
-        _text(surf, font_sm, iid, cx, cy - BOX - 14, TEXT_C, anchor='center')
-        # Queue count centred inside the box, bold
-        _text(surf, font_num, str(q), cx, cy, BLACK, anchor='center')
+        stats  = iid_time_stats.get(iid, {'bottleneck': 0, 'queued': 0, 'clear': 0})
+        tri    = [('bottleneck', SIG_RED), ('queued', SIG_YEL), ('clear', SIG_GRN)]
 
-    # Legend — centred along the bottom of the panel
+        # IID label above the box group
+        _text(surf, font_sm, iid, cx, cy - MBOX - 14, TEXT_C, anchor='center')
+
+        bx_start = cx - TOTAL_BW // 2
+        for j, (key, col) in enumerate(tri):
+            bx  = bx_start + j * (BOX_W + HGAP)
+            bcx = bx + MBOX          # horizontal centre of this box
+            val = stats[key]
+            pygame.draw.rect(surf, col,  (bx, cy - MBOX, BOX_W, BOX_W))
+            pygame.draw.rect(surf, GRAY, (bx, cy - MBOX, BOX_W, BOX_W), 1)
+            # Value centred inside the box in bold dark text
+            _text(surf, font_num, str(val), bcx, cy, TEXT_DARK, anchor='center')
+
+    # Legend
     legend_y  = oy + ph - LEGEND_H + 4
-    items     = [(SIG_GRN, 'clear'), (SIG_YEL, 'queued'), (SIG_RED, 'bottleneck')]
-    item_w    = 90
+    items     = [(SIG_RED, 'bottleneck (s)'), (SIG_YEL, 'queued (s)'), (SIG_GRN, 'clear (s)')]
+    item_w    = 118
     leg_start = ox + (pw - len(items) * item_w) // 2
     for i, (col, lbl) in enumerate(items):
         lx = leg_start + i * item_w
@@ -610,20 +615,43 @@ def _draw_boxplots(surf, font, font_sm, past_runs, current_idx, ox, oy, pw, ph):
     col_w   = (pw - 2 * PAD_LR) // 3
     box_w   = max(30, col_w // 3)
 
-    # Fixed 0-100 scale shared by all three plots
-    def to_y(v):
+    # ── Fixed 0-100 axis: Throughput (col 0) + Equity (col 1) ─────────
+    def to_y_pct(v):
         return int(plot_y1 - max(0.0, min(100.0, v)) / 100.0 * plot_h)
 
-    # Horizontal gridlines at 0, 20, 40, 60, 80, 100 — drawn once across all columns
-    grid_x0 = ox + PAD_LR
-    grid_x1 = ox + pw - PAD_LR
+    pct_x0 = ox + PAD_LR
+    pct_x1 = ox + PAD_LR + col_w * 2
     for gv in range(0, 101, 20):
-        gy = to_y(gv)
-        pygame.draw.line(surf, DARK_GRAY, (grid_x0, gy), (grid_x1, gy), 1)
-        _text(surf, font_sm, str(gv), grid_x0 - 4, gy, TEXT_DIM, anchor='midright')
+        gy = to_y_pct(gv)
+        pygame.draw.line(surf, DARK_GRAY, (pct_x0, gy), (pct_x1, gy), 1)
+        _text(surf, font_sm, str(gv), pct_x0 - 4, gy, TEXT_DIM, anchor='midright')
+
+    # ── Adaptive axis: Avg Delay (col 2) ───────────────────────────────
+    dls    = specs[2][1]
+    dl_hi  = max(max(dls) * 1.15, 30.0) if dls else 60.0
+    dl_step = next((s for s in [5, 10, 15, 20, 30, 60] if dl_hi / s <= 7), 60)
+
+    def to_y_delay(v):
+        return int(plot_y1 - max(0.0, min(dl_hi, v)) / dl_hi * plot_h)
+
+    del_x0 = ox + PAD_LR + col_w * 2
+    del_x1 = ox + pw - PAD_LR
+    # Thin separator between the two scales
+    pygame.draw.line(surf, GRAY, (del_x0, plot_y0 - 4), (del_x0, plot_y1 + 4), 1)
+    gv = 0.0
+    while gv <= dl_hi + 0.01:
+        gy = to_y_delay(gv)
+        if plot_y0 <= gy <= plot_y1:
+            pygame.draw.line(surf, DARK_GRAY, (del_x0, gy), (del_x1, gy), 1)
+            _text(surf, font_sm, f'{int(gv)}s', del_x0 + 4, gy, TEXT_DIM, anchor='midleft')
+        gv += dl_step
+
+    # ── Draw each column's boxplot ──────────────────────────────────────
+    to_y_fns = [to_y_pct, to_y_pct, to_y_delay]
 
     for col_i, (label, vals, cur_val, unit, higher_better) in enumerate(specs):
-        cx = ox + PAD_LR + col_w * col_i + col_w // 2
+        cx   = ox + PAD_LR + col_w * col_i + col_w // 2
+        to_y = to_y_fns[col_i]
 
         sv  = sorted(vals)
         nv  = len(sv)
@@ -631,7 +659,7 @@ def _draw_boxplots(surf, font, font_sm, past_runs, current_idx, ox, oy, pw, ph):
         med = sv[nv // 2]
         q3  = sv[min(nv - 1, 3 * nv // 4)]
 
-        # Whisker (data min → max, clamped to 0-100)
+        # Whisker
         pygame.draw.line(surf, DARK_GRAY, (cx, to_y(sv[0])), (cx, to_y(sv[-1])), 1)
         cap = max(4, box_w // 4)
         pygame.draw.line(surf, DARK_GRAY, (cx-cap, to_y(sv[0])),  (cx+cap, to_y(sv[0])),  1)
@@ -661,7 +689,7 @@ def _draw_boxplots(surf, font, font_sm, past_runs, current_idx, ox, oy, pw, ph):
         pct_col  = SIG_GRN if pct_good >= 70 else (SIG_YEL if pct_good >= 40 else SIG_RED)
         pct_lbl  = f'top {100 - pct_good}%' if pct_good >= 50 else f'bottom {pct_good}%'
 
-        # Labels below the plot
+        # Labels below
         _text(surf, font,    label,                  cx, plot_y1 + 8,  TEXT_DIM, anchor='midtop')
         _text(surf, font_sm, f'{cur_val:.1f}{unit}', cx, plot_y1 + 26, WHITE,    anchor='midtop')
         _text(surf, font_sm, pct_lbl,                cx, plot_y1 + 42, pct_col,  anchor='midtop')
@@ -729,9 +757,9 @@ class ResultsScreen:
         NET_H    = 210    # height of the network snapshot panel
         y        = content_y
 
-        # Network snapshot with residual queues overlaid
+        # Network snapshot with per-intersection congestion stats
         _draw_results_network(surf, self.font_sm, self.network,
-                              m['queue_stats'], m['bottleneck'],
+                              m.get('iid_time_stats', {}),
                               LEFT_X, y, LEFT_W, NET_H)
         y += NET_H + 12
 
