@@ -20,7 +20,7 @@ from config import (
 )
 from maps import MAPS, MAP_ORDER
 from simulation import SimulationEngine
-from scores import save_run, pareto_indices
+from scores import save_run
 
 # ──────────────────────────────────────────────────────────────────────
 # Direction → image subdirectory mapping
@@ -201,17 +201,29 @@ class PreRunScreen:
     def draw(self, surf):
         surf.fill(UI_BG)
 
-        # Title
-        _text(surf, self.font_lg, 'TRAFFIC SIGNAL NETWORK',
-              SCREEN_W // 2, 22, ACCENT, anchor='midtop')
-        _text(surf, self.font_sm, 'Standard signal cycles active  —  observe & optimise.',
-              SCREEN_W // 2, 62, TEXT_DIM, anchor='midtop')
+        # ── Title ───────────────────────────────────────────────────────
+        _text(surf, self.font_lg, 'ADAPTIVE TRAFFIC CONTROL',
+              SCREEN_W // 2, 16, ACCENT, anchor='midtop')
+        _text(surf, self.font_sm, 'A SERIOUS GAME FOR REAL-TIME SIGNAL MANAGEMENT',
+              SCREEN_W // 2, 48, TEXT_DIM, anchor='midtop')
 
-        # Map list (left panel)
-        LIST_X, LIST_Y = 30, 100
+        # ── Intro block ─────────────────────────────────────────────────
+        intro = [
+            'Vehicles arrive randomly at the network boundary and route to their destination.',
+            'Intersections run fixed 20-second NS / EW cycles — queues build when phases lag demand.',
+            'Click an intersection (or press 1-6), then N or E to force a green phase.',
+            'Goal: minimise delays, while maximising throughput and equity!',
+        ]
+        iy = 72
+        for line in intro:
+            _text(surf, self.font_sm, line, SCREEN_W // 2, iy, TEXT_DIM, anchor='midtop')
+            iy += 17
+
+        # ── Map list (left panel) ────────────────────────────────────────
+        LIST_X, LIST_Y = 30, 148
         LIST_W, LIST_H = 370, 44
 
-        _text(surf, self.font_sm, '↑ / ↓   select map', LIST_X, LIST_Y - 24, TEXT_DIM)
+        _text(surf, self.font_sm, '↑ / ↓   select map', LIST_X, LIST_Y - 22, TEXT_DIM)
 
         for i, key in enumerate(MAP_ORDER):
             m   = MAPS[key]
@@ -225,10 +237,10 @@ class PreRunScreen:
             _text(surf, self.font,    m['name'],        LIST_X + 12, y + 6,  col)
             _text(surf, self.font_sm, m['description'], LIST_X + 12, y + 26, TEXT_DIM)
 
-        # Scenario strip (below list)
-        scen_y = LIST_Y + len(MAP_ORDER) * (LIST_H + 6) + 16
+        # ── Scenario strip (below list) ──────────────────────────────────
+        scen_y = LIST_Y + len(MAP_ORDER) * (LIST_H + 6) + 14
         _text(surf, self.font_sm, '← / →   scenario', LIST_X, scen_y, TEXT_DIM)
-        scen_y += 22
+        scen_y += 20
         for i, s in enumerate(SCENARIOS_LIST):
             sel = (i == self.scenario_idx)
             col = (ACCENT if sel else GRAY)
@@ -240,12 +252,12 @@ class PreRunScreen:
                 pygame.draw.rect(surf, ACCENT, (bx, scen_y, bw, 34), 1, border_radius=5)
             _text(surf, self.font, s.upper(), bx + bw // 2, scen_y + 17, col, anchor='center')
 
-        # Hint
-        _text(surf, self.font, 'ENTER  →  run simulation',
-              LIST_X, scen_y + 52, WHITE)
+        # ── Hint ─────────────────────────────────────────────────────────
+        _text(surf, self.font, 'ENTER  →  start',
+              LIST_X, scen_y + 48, WHITE)
 
-        # Map preview (right side)
-        self._draw_preview(surf, MAP_ORDER[self.map_idx], 440, 88, 420, 480)
+        # ── Map preview (right side) ─────────────────────────────────────
+        self._draw_preview(surf, MAP_ORDER[self.map_idx], 430, 148, 450, 460)
 
     def _draw_preview(self, surf, map_key, ox, oy, pw, ph):
         """Draw a small static map preview in a box at (ox,oy) size pw×ph."""
@@ -461,93 +473,111 @@ class RunningScreen:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Pareto scatter plot helper
+# Performance boxplots helper
 # ──────────────────────────────────────────────────────────────────────
 
-def _draw_pareto(surf, font, font_sm, past_runs, current_idx, ox, oy, pw, ph):
-    """Scatter plot of all runs for this map+scenario with Pareto front."""
+def _draw_boxplots(surf, font, font_sm, past_runs, current_idx, ox, oy, pw, ph):
+    """
+    Three vertical boxplots (throughput %, equity %, avg delay) with the
+    current run highlighted and its percentile rank shown.
+    """
     pygame.draw.rect(surf, UI_PANEL, (ox, oy, pw, ph), border_radius=6)
     pygame.draw.rect(surf, GRAY,     (ox, oy, pw, ph), 1, border_radius=6)
 
-    _text(surf, font_sm, 'Performance vs. past runs  (this map & scenario)',
+    _text(surf, font_sm, 'How did you do?  (same map & scenario)',
           ox + pw // 2, oy + 8, TEXT_DIM, anchor='midtop')
 
     n = len(past_runs)
     if n < 2:
-        msg = 'Complete another run to see the comparison.' if n == 1 else 'No past runs yet.'
+        msg = 'Finish another run to unlock the comparison chart.'
         _text(surf, font_sm, msg, ox + pw // 2, oy + ph // 2, TEXT_DIM, anchor='center')
         return
 
-    # Plot area margins
-    lm, rm, tm, bm = 48, 16, 28, 36
-    px0 = ox + lm
-    py0 = oy + tm + 16
-    pw2 = pw - lm - rm
-    ph2 = ph - tm - bm - 16
+    _text(surf, font_sm, f'{n} runs recorded',
+          ox + pw - 10, oy + 8, TEXT_DIM, anchor='topright')
 
-    tps = [r['throughput'] for r in past_runs]
-    dls = [r['avg_delay']  for r in past_runs]
-    dl_max = max(max(dls) * 1.15, 30.0)
+    cur = past_runs[current_idx]
 
-    def to_sc(tp, dl):
-        sx = px0 + int(tp * pw2)
-        sy = py0 + ph2 - int((1.0 - dl / dl_max) * ph2)
-        return sx, sy
+    # (label, [all values], current value, unit, higher_is_better)
+    specs = [
+        ('Throughput', [r['throughput'] * 100 for r in past_runs],
+         cur['throughput'] * 100, '%',  True),
+        ('Equity',     [r['equity']     * 100 for r in past_runs],
+         cur['equity']     * 100, '%',  True),
+        ('Avg Delay',  [r['avg_delay']         for r in past_runs],
+         cur['avg_delay'],         's', False),
+    ]
 
-    # Axes
-    pygame.draw.line(surf, GRAY, (px0, py0),       (px0,       py0 + ph2))
-    pygame.draw.line(surf, GRAY, (px0, py0 + ph2), (px0 + pw2, py0 + ph2))
+    PAD_TOP = 38
+    PAD_BOT = 62
+    PAD_LR  = 24
+    plot_y0 = oy + PAD_TOP
+    plot_y1 = oy + ph - PAD_BOT
+    plot_h  = plot_y1 - plot_y0
+    col_w   = (pw - 2 * PAD_LR) // 3
+    box_w   = max(30, col_w // 3)
 
-    # Axis tick labels
-    _text(surf, font_sm, '0%',   px0,        py0 + ph2 + 3, TEXT_DIM, anchor='midtop')
-    _text(surf, font_sm, '100%', px0 + pw2,  py0 + ph2 + 3, TEXT_DIM, anchor='midtop')
-    _text(surf, font_sm, 'Throughput  →',
-          ox + pw // 2, oy + ph - 18, TEXT_DIM, anchor='midtop')
-    _text(surf, font_sm, f'{int(dl_max)}s', px0 - 4, py0,        TEXT_DIM, anchor='midright')
-    _text(surf, font_sm, '0s',              px0 - 4, py0 + ph2,  TEXT_DIM, anchor='midright')
-    _text(surf, font_sm, '↑ low delay', ox + 6, oy + ph // 2, TEXT_DIM, anchor='midleft')
+    for col_i, (label, vals, cur_val, unit, higher_better) in enumerate(specs):
+        cx  = ox + PAD_LR + col_w * col_i + col_w // 2
 
-    # Pareto front step-line
-    pf_idx  = pareto_indices(past_runs)
-    pf_runs = sorted([past_runs[i] for i in pf_idx], key=lambda r: r['throughput'])
-    if len(pf_runs) >= 2:
-        pts = []
-        for r in pf_runs:
-            pts.append(to_sc(r['throughput'], r['avg_delay']))
-        # step: go right, then up
-        step_pts = [pts[0]]
-        for i in range(1, len(pts)):
-            step_pts.append((pts[i][0], step_pts[-1][1]))
-            step_pts.append(pts[i])
-        pygame.draw.lines(surf, ACCENT, False, step_pts, 2)
-        # dots on Pareto front
-        for pt in pts:
-            pygame.draw.circle(surf, ACCENT, pt, 4)
+        sv   = sorted(vals)
+        nv   = len(sv)
+        vmin = sv[0]
+        vmax = sv[-1]
+        q1   = sv[max(0, nv // 4 - 1)]
+        med  = sv[nv // 2]
+        q3   = sv[min(nv - 1, 3 * nv // 4)]
 
-    # All non-current runs
-    for i, r in enumerate(past_runs):
-        if i == current_idx:
-            continue
-        sx, sy = to_sc(r['throughput'], r['avg_delay'])
-        col = ACCENT if i in pf_idx else TEXT_DIM
-        pygame.draw.circle(surf, col, (sx, sy), 3 if i in pf_idx else 2)
+        span = max(vmax - vmin, 1e-6)
+        y_lo = max(0.0, vmin - span * 0.12)
+        y_hi = vmax + span * 0.12
+        if unit == '%':
+            y_hi = min(y_hi, 100.0)
 
-    # Current run (bright)
-    if 0 <= current_idx < n:
-        cur = past_runs[current_idx]
-        sx, sy = to_sc(cur['throughput'], cur['avg_delay'])
-        pygame.draw.circle(surf, UI_BG, (sx, sy), 7)
-        pygame.draw.circle(surf, WHITE,  (sx, sy), 6)
-        pygame.draw.circle(surf, ACCENT, (sx, sy), 6, 2)
+        def to_y(v, _lo=y_lo, _hi=y_hi):
+            return int(plot_y1 - (v - _lo) / (_hi - _lo) * plot_h)
 
-    # Summary line
-    best_tp  = max(tps)
-    best_dl  = min(dls)
-    on_front = current_idx in pf_idx
-    tag      = '  ★ Pareto-optimal!' if on_front else ''
-    _text(surf, font_sm,
-          f'{n} runs · best TP {best_tp*100:.0f}% · best delay {best_dl:.0f}s{tag}',
-          ox + pw // 2, oy + ph - 4, WHITE if on_front else TEXT_DIM, anchor='midbottom')
+        # Whisker (min → max)
+        pygame.draw.line(surf, DARK_GRAY, (cx, to_y(vmin)), (cx, to_y(vmax)), 1)
+        cap = max(4, box_w // 4)
+        pygame.draw.line(surf, DARK_GRAY, (cx - cap, to_y(vmin)), (cx + cap, to_y(vmin)), 1)
+        pygame.draw.line(surf, DARK_GRAY, (cx - cap, to_y(vmax)), (cx + cap, to_y(vmax)), 1)
+
+        # IQR box
+        iq_top = to_y(q3)
+        iq_bot = to_y(q1)
+        pygame.draw.rect(surf, HIGHLIGHT, (cx - box_w // 2, iq_top, box_w, iq_bot - iq_top))
+        pygame.draw.rect(surf, GRAY,      (cx - box_w // 2, iq_top, box_w, iq_bot - iq_top), 1)
+
+        # Median
+        pygame.draw.line(surf, WHITE,
+                         (cx - box_w // 2, to_y(med)),
+                         (cx + box_w // 2, to_y(med)), 2)
+
+        # Y-axis labels (first column only)
+        if col_i == 0:
+            _text(surf, font_sm, f'{y_hi:.0f}{unit}',
+                  cx - box_w // 2 - 6, plot_y0, TEXT_DIM, anchor='midright')
+            _text(surf, font_sm, f'{y_lo:.0f}{unit}',
+                  cx - box_w // 2 - 6, plot_y1, TEXT_DIM, anchor='midright')
+
+        # Current run dot
+        cur_y_px = to_y(cur_val)
+        pygame.draw.circle(surf, UI_BG,  (cx, cur_y_px), 7)
+        pygame.draw.circle(surf, WHITE,  (cx, cur_y_px), 6)
+        pygame.draw.circle(surf, ACCENT, (cx, cur_y_px), 6, 2)
+
+        # Percentile rank: "better than X% of all runs"
+        n_below  = sum(1 for v in vals if v < cur_val)
+        pct_rank = 100 * n_below // nv          # % of runs beaten on raw axis
+        pct_good = pct_rank if higher_better else (100 - pct_rank)
+        pct_col  = SIG_GRN if pct_good >= 70 else (SIG_YEL if pct_good >= 40 else SIG_RED)
+        pct_lbl  = f'top {100 - pct_good}%' if pct_good >= 50 else f'bottom {pct_good}%'
+
+        # Labels below the plot
+        _text(surf, font,    label,                  cx, plot_y1 + 8,  TEXT_DIM, anchor='midtop')
+        _text(surf, font_sm, f'{cur_val:.1f}{unit}', cx, plot_y1 + 26, WHITE,    anchor='midtop')
+        _text(surf, font_sm, pct_lbl,                cx, plot_y1 + 42, pct_col,  anchor='midtop')
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -638,12 +668,12 @@ class ResultsScreen:
             if y > content_y + content_h:
                 break
 
-        # ── Right column: Pareto scatter ────────────────────────────────
+        # ── Right column: performance boxplots ─────────────────────────
         RIGHT_X = LEFT_X + LEFT_W + 20
         RIGHT_W = SCREEN_W - RIGHT_X - 16
-        _draw_pareto(surf, self.font, self.font_sm,
-                     self.past_runs, len(self.past_runs) - 1,
-                     RIGHT_X, content_y, RIGHT_W, content_h)
+        _draw_boxplots(surf, self.font, self.font_sm,
+                       self.past_runs, len(self.past_runs) - 1,
+                       RIGHT_X, content_y, RIGHT_W, content_h)
 
         # ── Footer ──────────────────────────────────────────────────────
         _text(surf, self.font, 'R / ENTER → play again    ESC → quit',
@@ -657,7 +687,7 @@ class ResultsScreen:
 def run():
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
-    pygame.display.set_caption('Traffic Signal Network Simulation')
+    pygame.display.set_caption('Adaptive Traffic Control — Serious Game')
     clock = pygame.time.Clock()
 
     font_lg = pygame.font.Font(None, 44)

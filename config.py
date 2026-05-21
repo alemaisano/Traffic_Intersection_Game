@@ -34,9 +34,9 @@ VEHICLE_PARAMS = {
 VEHICLE_MIX = [('car', 1.0)]
 
 SCENARIOS = {
-    'light':    {'lam': 0.5},
-    'balanced': {'lam': 1.2},
-    'peak':     {'lam': 2.5},
+    'light':    {'lam': 2.0},
+    'balanced': {'lam': 4.5},
+    'peak':     {'lam': 9.0},
 }
 
 # Colours
