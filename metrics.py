@@ -1,26 +1,23 @@
 import math
-from config import INTERSECTION_NODES
 from vehicles import DONE
 
 
-def compute_metrics(vehicles: list, network) -> dict:
-    """Compute throughput, delay, and equity after a simulation run."""
+def compute_metrics(vehicles, network):
     total     = len(vehicles)
     completed = [v for v in vehicles if v.state == DONE]
     n_done    = len(completed)
     throughput = n_done / total if total > 0 else 0.0
 
-    # Per-vehicle delay
-    od_delays: dict[tuple, list] = {}
+    od_delays = {}
     for v in completed:
-        ff = network.free_flow_time(v.route, v.vclass)
+        ff    = network.free_flow_time(v.route, v.vclass)
         actual = v.actual_arrive - v.actual_depart
         v.delay = max(0.0, actual - ff)
-        key = (v.origin_zone, v.dest_zone)
+        key   = (v.origin_zone, v.dest_zone)
         od_delays.setdefault(key, []).append(v.delay)
 
     all_delays = [d for ds in od_delays.values() for d in ds]
-    avg_delay  = (sum(all_delays) / len(all_delays)) if all_delays else 0.0
+    avg_delay  = sum(all_delays) / len(all_delays) if all_delays else 0.0
 
     # Equity: 1 - coefficient of variation of per-OD mean delay
     od_means = [sum(ds) / len(ds) for ds in od_delays.values() if ds]
@@ -33,21 +30,19 @@ def compute_metrics(vehicles: list, network) -> dict:
     else:
         equity = 0.0
 
-    # Weighted throughput (spec §10)
     w_done  = sum(v.weight for v in completed)
     w_total = sum(v.weight for v in vehicles)
     weighted_throughput = w_done / w_total if w_total > 0 else 0.0
 
-    # Per-intersection residual queue (vehicles still on approach segments)
-    queue_stats: dict[str, int] = {}
-    for iid in INTERSECTION_NODES:
-        count = 0
-        for seg in network.segments.values():
-            if seg.enters_intersection == iid:
-                count += len(seg.vehicles)
-        queue_stats[iid] = count
+    # Per-intersection residual queue
+    queue_stats = {}
+    for iid in network.intersection_nodes:
+        queue_stats[iid] = sum(
+            len(seg.vehicles)
+            for seg in network.segments.values()
+            if seg.enters_intersection == iid
+        )
 
-    # Bottleneck: intersection with highest residual queue
     bottleneck = max(queue_stats, key=queue_stats.get) if queue_stats else None
 
     return {

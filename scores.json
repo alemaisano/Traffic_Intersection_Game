@@ -1,0 +1,1 @@
+{"boulevard_balanced": [{"throughput": 1.0, "avg_delay": 5.06, "equity": 0.201, "completed": 35, "total": 35, "date": "2026-05-21"}, {"throughput": 1.0, "avg_delay": 6.99, "equity": 0.3119, "completed": 31, "total": 31, "date": "2026-05-21"}], "t_cross_balanced": [{"throughput": 1.0, "avg_delay": 12.78, "equity": 0.2176, "completed": 68, "total": 68, "date": "2026-05-21"}]}

@@ -3,28 +3,66 @@ ui.py  –  Pygame front-end for the Traffic Signal Network Simulation.
 
 Three screens
 ─────────────
-  PRERUN   : scenario picker + per-intersection signal timing editor
+  PRERUN   : map selector + scenario picker
   RUNNING  : live network map + HUD
   RESULTS  : post-run metrics dashboard
 """
 
 import sys
+import os
 import pygame
 from config import (
-    SCREEN_W, SCREEN_H, FPS, STEPS_PER_FRAME,
-    NODE_PIXELS, INTERSECTION_NODES, BOUNDARY_ZONES, ROAD_PAIRS,
-    INTERSECTION_HALF_PX, LANE_OFFSET_PX,
-    DEFAULT_NS_GREEN, DEFAULT_EW_GREEN, DEFAULT_YELLOW,
-    MIN_GREEN, MAX_GREEN, HORIZON,
-    BLACK, WHITE, GRAY, DARK_GRAY, ROAD_C, INT_C,
+    SCREEN_W, SCREEN_H, FPS, STEPS_PER_FRAME, HORIZON,
+    PIXELS_PER_METER, LANE_OFFSET_PX, INTERSECTION_HALF_PX,
+    BLACK, WHITE, GRAY, DARK_GRAY, ROAD_C, CENTRE_C, INT_C,
     SIG_RED, SIG_YEL, SIG_GRN,
     UI_BG, UI_PANEL, HIGHLIGHT, TEXT_C, TEXT_DIM, ACCENT,
-    VEHICLE_PARAMS, PIXELS_PER_METER,
 )
+from maps import MAPS, MAP_ORDER
 from simulation import SimulationEngine
+from scores import save_run, pareto_indices
 
 # ──────────────────────────────────────────────────────────────────────
-# helpers
+# Direction → image subdirectory mapping
+# ──────────────────────────────────────────────────────────────────────
+_DIR_IMG = {'E': 'right', 'W': 'left', 'S': 'down', 'N': 'up'}
+
+ROAD_WIDTH = LANE_OFFSET_PX * 2 + 4   # total road width in pixels
+
+# Car image pixel dimensions (scaled to fit the lane)
+CAR_LONG = max(20, int(4.5 * PIXELS_PER_METER))   # along direction of travel
+CAR_WIDE = LANE_OFFSET_PX * 2 - 4                  # across direction of travel
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Asset loading
+# ──────────────────────────────────────────────────────────────────────
+
+def _load_car_images():
+    """Return {direction: scaled_Surface} for E/W/N/S."""
+    images = {}
+    for direction, subdir in _DIR_IMG.items():
+        path = os.path.join('images', subdir, 'car.png')
+        try:
+            img = pygame.image.load(path).convert_alpha()
+        except pygame.error:
+            # Fallback: plain coloured rectangle
+            if direction in ('E', 'W'):
+                img = pygame.Surface((CAR_LONG, CAR_WIDE), pygame.SRCALPHA)
+            else:
+                img = pygame.Surface((CAR_WIDE, CAR_LONG), pygame.SRCALPHA)
+            img.fill((100, 149, 237))
+        # Scale to lane size
+        if direction in ('E', 'W'):
+            img = pygame.transform.scale(img, (CAR_LONG, CAR_WIDE))
+        else:
+            img = pygame.transform.scale(img, (CAR_WIDE, CAR_LONG))
+        images[direction] = img
+    return images
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Common drawing helpers
 # ──────────────────────────────────────────────────────────────────────
 
 def _text(surf, font, msg, x, y, color=TEXT_C, anchor='topleft'):
@@ -48,97 +86,87 @@ def _lerp_color(c1, c2, t):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# network map drawing (used on RUNNING screen)
+# Network map drawing (RUNNING screen)
 # ──────────────────────────────────────────────────────────────────────
 
-ROAD_WIDTH = LANE_OFFSET_PX * 2 + 6    # both lanes + kerb
-
-
-def _draw_network(surf, signals_obj):
-    """Draw roads, intersections, and signal indicators."""
+def _draw_network(surf, network, signals_obj, font_sm, selected_iid=None):
+    node_px  = network.node_pixels
+    pairs    = network.road_pairs
+    i_nodes  = network.intersection_nodes
+    iid_list = sorted(i_nodes)
 
     # --- roads ---
-    drawn_pairs = set()
-    for (a, b) in ROAD_PAIRS:
+    drawn = set()
+    for (a, b) in pairs:
         key = tuple(sorted([a, b]))
-        if key in drawn_pairs:
+        if key in drawn:
             continue
-        drawn_pairs.add(key)
-        ax, ay = NODE_PIXELS[a]
-        bx, by = NODE_PIXELS[b]
-        if ax == bx:                            # vertical road
+        drawn.add(key)
+        ax, ay = node_px[a]
+        bx, by = node_px[b]
+        if ax == bx:    # vertical
             x1 = ax - ROAD_WIDTH // 2
             y1, y2 = min(ay, by), max(ay, by)
             pygame.draw.rect(surf, ROAD_C, (x1, y1, ROAD_WIDTH, y2 - y1))
-        else:                                   # horizontal road
+            # centre line
+            pygame.draw.line(surf, CENTRE_C, (ax, y1), (ax, y2), 1)
+        else:           # horizontal
             y1 = ay - ROAD_WIDTH // 2
             x1, x2 = min(ax, bx), max(ax, bx)
             pygame.draw.rect(surf, ROAD_C, (x1, y1, x2 - x1, ROAD_WIDTH))
+            pygame.draw.line(surf, CENTRE_C, (x1, ay), (x2, ay), 1)
 
     # --- intersection boxes ---
-    for iid in INTERSECTION_NODES:
-        cx, cy = NODE_PIXELS[iid]
+    for iid in i_nodes:
+        cx, cy = node_px[iid]
         h = INTERSECTION_HALF_PX
         pygame.draw.rect(surf, INT_C, (cx - h, cy - h, h * 2, h * 2))
-        pygame.draw.rect(surf, GRAY, (cx - h, cy - h, h * 2, h * 2), 1)
+        pygame.draw.rect(surf, GRAY,  (cx - h, cy - h, h * 2, h * 2), 1)
+        if iid == selected_iid:
+            pygame.draw.rect(surf, ACCENT, (cx - h - 4, cy - h - 4, h*2+8, h*2+8), 2, border_radius=4)
+        idx_label = str(iid_list.index(iid) + 1) if iid in iid_list else ''
+        _text(surf, font_sm, idx_label, cx, cy - h - 14, ACCENT, anchor='center')
 
-    # --- signal indicators (small coloured circles at intersection approaches) ---
+    # --- signal indicators ---
     if signals_obj is not None:
-        R = 6
+        R = 5
         for iid, sig in signals_obj.signals.items():
-            cx, cy = NODE_PIXELS[iid]
+            cx, cy = node_px[iid]
             h = INTERSECTION_HALF_PX
             ns_col = sig.signal_color('NS')
             ew_col = sig.signal_color('EW')
-            # N approach (vehicle travelling S enters from top)
-            pygame.draw.circle(surf, ns_col, (cx,     cy - h - R - 2), R)
-            # S approach
-            pygame.draw.circle(surf, ns_col, (cx,     cy + h + R + 2), R)
-            # W approach
-            pygame.draw.circle(surf, ew_col, (cx - h - R - 2, cy),     R)
-            # E approach
-            pygame.draw.circle(surf, ew_col, (cx + h + R + 2, cy),     R)
+            pygame.draw.circle(surf, ns_col, (cx,         cy - h - R - 2), R)
+            pygame.draw.circle(surf, ns_col, (cx,         cy + h + R + 2), R)
+            pygame.draw.circle(surf, ew_col, (cx - h - R - 2, cy),         R)
+            pygame.draw.circle(surf, ew_col, (cx + h + R + 2, cy),         R)
 
-    # --- boundary zone labels ---
-    return   # labels drawn separately by caller
-
-
-def _draw_zone_labels(surf, font_sm):
-    label_offsets = {
-        'TL': ( 0, -18), 'TR': ( 0, -18),
-        'LT': (-30,  0), 'LB': (-30,  0),
-        'RT': (  5,  0), 'RB': (  5,  0),
-        'BL': ( 0,  10), 'BR': ( 0,  10),
+    # --- zone labels ---
+    label_nudge = {
+        # adjusted per zone position so labels don't overlap roads
     }
-    for zone in BOUNDARY_ZONES:
-        cx, cy = NODE_PIXELS[zone]
-        ox, oy = label_offsets[zone]
-        _text(surf, font_sm, zone, cx + ox, cy + oy, ACCENT, anchor='center')
+    for zone in network.boundary_zones:
+        cx, cy = node_px[zone]
+        _text(surf, font_sm, zone, cx, cy - 12, ACCENT, anchor='center')
 
 
-def _draw_vehicles(surf, active_vehicles):
+def _draw_vehicles(surf, active_vehicles, car_images):
     for v in active_vehicles:
-        r = v.pixel_rect()
-        if r is None:
+        seg = v.current_segment
+        if seg is None:
             continue
-        pygame.draw.rect(surf, v.color, r)
-        # thin dark outline
-        pygame.draw.rect(surf, (0, 0, 0), r, 1)
+        cx, cy = v.pixel_pos()
+        img = car_images.get(seg.direction)
+        if img is None:
+            continue
+        rect = img.get_rect(center=(int(cx), int(cy)))
+        surf.blit(img, rect)
 
 
 # ──────────────────────────────────────────────────────────────────────
-# PRE-RUN screen
+# PRE-RUN screen  (map + scenario selection)
 # ──────────────────────────────────────────────────────────────────────
 
 SCENARIOS_LIST = ['light', 'balanced', 'peak']
-INTERSECTIONS  = ['I1', 'I2', 'I3', 'I4']
-
-# Editable fields per intersection: index → (label, key, min, max, step)
-FIELDS = [
-    ('NS Green', 'ns_green', MIN_GREEN, MAX_GREEN, 1),
-    ('EW Green', 'ew_green', MIN_GREEN, MAX_GREEN, 1),
-    ('Yellow',   'yellow',   2,         4,         1),
-]
 
 
 class PreRunScreen:
@@ -147,150 +175,132 @@ class PreRunScreen:
         self.font_sm = font_sm
         self.font_lg = font_lg
 
-        self.scenario_idx = 1           # default: balanced
-        self.timing = {
-            iid: {
-                'ns_green': DEFAULT_NS_GREEN,
-                'ew_green': DEFAULT_EW_GREEN,
-                'yellow':   DEFAULT_YELLOW,
-            }
-            for iid in INTERSECTIONS
-        }
+        self.map_idx      = 0
+        self.scenario_idx = 1    # default: balanced
+        self.done         = False
 
-        # cursor: (intersection_idx, field_idx)
-        self.cur_int   = 0
-        self.cur_field = 0
-        self.done      = False   # True when user presses Enter/Space to start
-        self.preview_net = None  # optional: a quick demand preview
-
-    # ------------------------------------------------------------------
+    # --- input ---
     def handle_event(self, event):
         if event.type != pygame.KEYDOWN:
             return
-        key = event.key
-
-        if key == pygame.K_ESCAPE:
+        k = event.key
+        if k == pygame.K_ESCAPE:
             pygame.quit(); sys.exit()
-
-        if key in (pygame.K_RETURN, pygame.K_SPACE):
+        if k in (pygame.K_RETURN, pygame.K_SPACE):
             self.done = True
             return
+        if k == pygame.K_UP:
+            self.map_idx = (self.map_idx - 1) % len(MAP_ORDER)
+        if k == pygame.K_DOWN:
+            self.map_idx = (self.map_idx + 1) % len(MAP_ORDER)
+        if k in (pygame.K_LEFT, pygame.K_RIGHT):
+            d = -1 if k == pygame.K_LEFT else 1
+            self.scenario_idx = (self.scenario_idx + d) % len(SCENARIOS_LIST)
 
-        # Scenario cycling
-        if key == pygame.K_s:
-            self.scenario_idx = (self.scenario_idx + 1) % len(SCENARIOS_LIST)
-            return
-
-        # Navigate intersections
-        if key in (pygame.K_LEFT, pygame.K_RIGHT):
-            delta = -1 if key == pygame.K_LEFT else 1
-            self.cur_int = (self.cur_int + delta) % len(INTERSECTIONS)
-            return
-
-        # Navigate fields
-        if key in (pygame.K_UP, pygame.K_DOWN):
-            delta = -1 if key == pygame.K_UP else 1
-            self.cur_field = (self.cur_field + delta) % len(FIELDS)
-            return
-
-        # Change value
-        iid   = INTERSECTIONS[self.cur_int]
-        label, fkey, fmin, fmax, fstep = FIELDS[self.cur_field]
-        if key in (pygame.K_MINUS, pygame.K_KP_MINUS):
-            self.timing[iid][fkey] = max(fmin, self.timing[iid][fkey] - fstep)
-        if key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
-            self.timing[iid][fkey] = min(fmax, self.timing[iid][fkey] + fstep)
-
-    # ------------------------------------------------------------------
+    # --- draw ---
     def draw(self, surf):
         surf.fill(UI_BG)
 
         # Title
         _text(surf, self.font_lg, 'TRAFFIC SIGNAL NETWORK',
-              SCREEN_W // 2, 28, ACCENT, anchor='midtop')
-        _text(surf, self.font_sm, 'Configure signal timing, then press ENTER to run.',
-              SCREEN_W // 2, 72, TEXT_DIM, anchor='midtop')
+              SCREEN_W // 2, 22, ACCENT, anchor='midtop')
+        _text(surf, self.font_sm, 'Standard signal cycles active  —  observe & optimise.',
+              SCREEN_W // 2, 62, TEXT_DIM, anchor='midtop')
 
-        # Scenario row
-        scen = SCENARIOS_LIST[self.scenario_idx]
-        _text(surf, self.font, f'Scenario:  [ S to cycle ]    ►  {scen.upper()}',
-              60, 110, WHITE)
+        # Map list (left panel)
+        LIST_X, LIST_Y = 30, 100
+        LIST_W, LIST_H = 370, 44
 
-        # Signal timing panel  (4 intersection columns)
-        col_w  = 240
-        col_xs = [16 + i * col_w for i in range(4)]
-        row_y0 = 155
+        _text(surf, self.font_sm, '↑ / ↓   select map', LIST_X, LIST_Y - 24, TEXT_DIM)
 
-        for ci, iid in enumerate(INTERSECTIONS):
-            cx = col_xs[ci]
-            is_sel = (ci == self.cur_int)
-            panel_color = HIGHLIGHT if is_sel else UI_PANEL
-            pygame.draw.rect(surf, panel_color, (cx - 6, row_y0 - 6,
-                                                  col_w - 10, 185), border_radius=6)
-            pygame.draw.rect(surf, ACCENT if is_sel else GRAY,
-                             (cx - 6, row_y0 - 6, col_w - 10, 185), 1, border_radius=6)
+        for i, key in enumerate(MAP_ORDER):
+            m   = MAPS[key]
+            y   = LIST_Y + i * (LIST_H + 6)
+            sel = (i == self.map_idx)
+            bg  = HIGHLIGHT if sel else UI_PANEL
+            pygame.draw.rect(surf, bg, (LIST_X, y, LIST_W, LIST_H), border_radius=6)
+            if sel:
+                pygame.draw.rect(surf, ACCENT, (LIST_X, y, LIST_W, LIST_H), 1, border_radius=6)
+            col = ACCENT if sel else TEXT_C
+            _text(surf, self.font,    m['name'],        LIST_X + 12, y + 6,  col)
+            _text(surf, self.font_sm, m['description'], LIST_X + 12, y + 26, TEXT_DIM)
 
-            _text(surf, self.font, iid, cx + 8, row_y0 + 4,
-                  ACCENT if is_sel else TEXT_C)
+        # Scenario strip (below list)
+        scen_y = LIST_Y + len(MAP_ORDER) * (LIST_H + 6) + 16
+        _text(surf, self.font_sm, '← / →   scenario', LIST_X, scen_y, TEXT_DIM)
+        scen_y += 22
+        for i, s in enumerate(SCENARIOS_LIST):
+            sel = (i == self.scenario_idx)
+            col = (ACCENT if sel else GRAY)
+            bw  = 110
+            bx  = LIST_X + i * (bw + 8)
+            pygame.draw.rect(surf, UI_PANEL if not sel else HIGHLIGHT,
+                             (bx, scen_y, bw, 34), border_radius=5)
+            if sel:
+                pygame.draw.rect(surf, ACCENT, (bx, scen_y, bw, 34), 1, border_radius=5)
+            _text(surf, self.font, s.upper(), bx + bw // 2, scen_y + 17, col, anchor='center')
 
-            for fi, (label, fkey, fmin, fmax, fstep) in enumerate(FIELDS):
-                fy = row_y0 + 38 + fi * 44
-                is_field_sel = is_sel and (fi == self.cur_field)
-                fc = WHITE if is_field_sel else TEXT_DIM
-                val = self.timing[iid][fkey]
+        # Hint
+        _text(surf, self.font, 'ENTER  →  run simulation',
+              LIST_X, scen_y + 52, WHITE)
 
-                _text(surf, self.font_sm, label, cx + 8, fy, fc)
-                # value box
-                vbox_x = cx + 128
-                pygame.draw.rect(surf, DARK_GRAY, (vbox_x, fy - 2, 50, 22),
-                                 border_radius=3)
-                if is_field_sel:
-                    pygame.draw.rect(surf, ACCENT, (vbox_x, fy - 2, 50, 22), 1,
-                                     border_radius=3)
-                _text(surf, self.font, str(val), vbox_x + 25, fy + 9,
-                      ACCENT if is_field_sel else WHITE, anchor='center')
-                # bar
-                _bar(surf, cx + 8, fy + 26, col_w - 30, 5,
-                     val - fmin, fmax - fmin, ACCENT)
+        # Map preview (right side)
+        self._draw_preview(surf, MAP_ORDER[self.map_idx], 440, 88, 420, 480)
 
-        # Controls hint
-        hints = [
-            '← / →  select intersection',
-            '↑ / ↓  select field',
-            '+  /  −  change value',
-            'S  cycle scenario',
-            'ENTER  start',
-        ]
-        for i, h in enumerate(hints):
-            _text(surf, self.font_sm, h, 16, 370 + i * 24, TEXT_DIM)
+    def _draw_preview(self, surf, map_key, ox, oy, pw, ph):
+        """Draw a small static map preview in a box at (ox,oy) size pw×ph."""
+        m = MAPS[map_key]
+        pygame.draw.rect(surf, UI_PANEL, (ox, oy, pw, ph), border_radius=8)
+        pygame.draw.rect(surf, GRAY,     (ox, oy, pw, ph), 1, border_radius=8)
 
-        # Mini network preview (static)
-        self._draw_mini_network(surf, 680, 360)
-
-    def _draw_mini_network(self, surf, ox, oy):
-        """Tiny static preview of the 4-intersection grid."""
-        scale  = 0.28
-        radius = 10
+        node_px = m['node_pixels']
+        # Compute bounding box of the map nodes
+        xs = [p[0] for p in node_px.values()]
+        ys = [p[1] for p in node_px.values()]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        span_x = max(1, max_x - min_x)
+        span_y = max(1, max_y - min_y)
+        margin = 36
 
         def sp(name):
-            px, py = NODE_PIXELS[name]
-            return (int(ox + px * scale), int(oy + py * scale - 200 * scale))
+            px, py = node_px[name]
+            nx = ox + margin + (px - min_x) / span_x * (pw - 2 * margin)
+            ny = oy + margin + (py - min_y) / span_y * (ph - 2 * margin)
+            return (int(nx), int(ny))
 
-        for (a, b) in ROAD_PAIRS:
-            ax, ay = sp(a)
-            bx, by = sp(b)
-            pygame.draw.line(surf, ROAD_C, (ax, ay), (bx, by), 4)
+        # roads
+        drawn = set()
+        for (a, b) in m['road_pairs']:
+            key = tuple(sorted([a, b]))
+            if key in drawn:
+                continue
+            drawn.add(key)
+            pygame.draw.line(surf, ROAD_C, sp(a), sp(b), 6)
 
-        for iid in INTERSECTION_NODES:
+        # intersections
+        for iid in m['intersection_nodes']:
             cx, cy = sp(iid)
-            pygame.draw.rect(surf, INT_C,
-                             (cx - radius, cy - radius, radius * 2, radius * 2))
-            _text(surf, self.font_sm, iid, cx, cy, ACCENT, anchor='center')
+            pygame.draw.rect(surf, INT_C, (cx - 8, cy - 8, 16, 16))
+            pygame.draw.rect(surf, GRAY,  (cx - 8, cy - 8, 16, 16), 1)
 
-        for zone in BOUNDARY_ZONES:
+        # boundary zones
+        font_tiny = pygame.font.Font(None, 18)
+        for zone in m['boundary_zones']:
             cx, cy = sp(zone)
-            pygame.draw.circle(surf, GRAY, (cx, cy), 5)
-            _text(surf, self.font_sm, zone, cx, cy - 10, TEXT_DIM, anchor='center')
+            pygame.draw.circle(surf, GRAY, (cx, cy), 4)
+            _text(surf, font_tiny, zone, cx, cy - 10, TEXT_DIM, anchor='center')
+
+        # map name centred below preview
+        _text(surf, self.font, m['name'], ox + pw // 2, oy + ph + 8, ACCENT, anchor='midtop')
+        n_int = len(m['intersection_nodes'])
+        n_zon = len(m['boundary_zones'])
+        _text(surf, self.font_sm, f'{n_int} intersections · {n_zon} entry zones',
+              ox + pw // 2, oy + ph + 34, TEXT_DIM, anchor='midtop')
+
+    @property
+    def map_name(self):
+        return MAP_ORDER[self.map_idx]
 
     @property
     def scenario(self):
@@ -302,25 +312,54 @@ class PreRunScreen:
 # ──────────────────────────────────────────────────────────────────────
 
 class RunningScreen:
-    def __init__(self, engine: SimulationEngine, font, font_sm, font_lg):
-        self.engine   = engine
-        self.font     = font
-        self.font_sm  = font_sm
-        self.font_lg  = font_lg
-        self.paused   = False
-        self.speed    = STEPS_PER_FRAME   # steps per rendered frame
+    def __init__(self, engine, font, font_sm, font_lg, car_images):
+        self.engine       = engine
+        self.font         = font
+        self.font_sm      = font_sm
+        self.font_lg      = font_lg
+        self.car_images   = car_images
+        self.paused       = False
+        self.speed        = STEPS_PER_FRAME
+        self.iid_list     = sorted(engine.signals.signals.keys())
+        self.selected_idx = 0
 
     def handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            mx, my = event.pos
+            best_iid, best_d = None, float('inf')
+            for iid in self.iid_list:
+                cx, cy = self.engine.network.node_pixels[iid]
+                d = (mx - cx) ** 2 + (my - cy) ** 2
+                if d < best_d:
+                    best_d, best_iid = d, iid
+            if best_iid and best_d < (INTERSECTION_HALF_PX * 4) ** 2:
+                self.selected_idx = self.iid_list.index(best_iid)
+            return
+
         if event.type != pygame.KEYDOWN:
             return
-        if event.key == pygame.K_ESCAPE:
+        k = event.key
+        if k == pygame.K_ESCAPE:
             pygame.quit(); sys.exit()
-        if event.key == pygame.K_p:
+        if k == pygame.K_p:
             self.paused = not self.paused
-        if event.key == pygame.K_EQUALS or event.key == pygame.K_KP_PLUS:
+        if k in (pygame.K_EQUALS, pygame.K_KP_PLUS):
             self.speed = min(self.speed + 1, 10)
-        if event.key == pygame.K_MINUS or event.key == pygame.K_KP_MINUS:
+        if k in (pygame.K_MINUS, pygame.K_KP_MINUS):
             self.speed = max(self.speed - 1, 1)
+        if k == pygame.K_TAB and self.iid_list:
+            self.selected_idx = (self.selected_idx + 1) % len(self.iid_list)
+        _NUM_KEYS = [pygame.K_1, pygame.K_2, pygame.K_3,
+                     pygame.K_4, pygame.K_5, pygame.K_6]
+        for i, nk in enumerate(_NUM_KEYS):
+            if k == nk and i < len(self.iid_list):
+                self.selected_idx = i
+        if self.iid_list:
+            sel = self.iid_list[self.selected_idx]
+            if k == pygame.K_n:
+                self.engine.signals.signals[sel].force_green('NS')
+            if k == pygame.K_e:
+                self.engine.signals.signals[sel].force_green('EW')
 
     def update(self):
         if self.paused or self.engine.done:
@@ -332,91 +371,183 @@ class RunningScreen:
 
     def draw(self, surf):
         surf.fill(UI_BG)
-
-        # Network
-        _draw_network(surf, self.engine.signals)
-        _draw_zone_labels(surf, self.font_sm)
-        _draw_vehicles(surf, self.engine.active_vehicles())
-
-        # HUD panel (right side)
+        sel_iid = self.iid_list[self.selected_idx] if self.iid_list else None
+        _draw_network(surf, self.engine.network, self.engine.signals, self.font_sm, sel_iid)
+        _draw_vehicles(surf, self.engine.active_vehicles(), self.car_images)
         self._draw_hud(surf)
 
     def _draw_hud(self, surf):
-        hx, hy = SCREEN_W - 240, 10
-        hw, hh = 228, SCREEN_H - 20
+        hx, hy = SCREEN_W - 212, 8
+        hw, hh = 200, SCREEN_H - 16
         pygame.draw.rect(surf, UI_PANEL, (hx, hy, hw, hh), border_radius=6)
-        pygame.draw.rect(surf, GRAY, (hx, hy, hw, hh), 1, border_radius=6)
+        pygame.draw.rect(surf, GRAY,     (hx, hy, hw, hh), 1, border_radius=6)
 
-        y = hy + 14
+        y = hy + 10
         _text(surf, self.font_lg, 'HUD', hx + hw // 2, y, ACCENT, anchor='midtop')
-        y += 36
+        y += 32
 
-        # Time
+        # Time bar
         elapsed = self.engine.sim_time
-        pct     = elapsed / HORIZON
-        _text(surf, self.font_sm, f'Time  {elapsed:5.1f} / {HORIZON:.0f} s',
-              hx + 10, y, TEXT_C)
-        y += 20
-        _bar(surf, hx + 10, y, hw - 20, 8, elapsed, HORIZON, ACCENT)
+        _text(surf, self.font_sm, f'Time  {elapsed:.1f} / {HORIZON:.0f} s', hx + 8, y, TEXT_C)
         y += 18
+        _bar(surf, hx + 8, y, hw - 16, 7, elapsed, HORIZON, ACCENT)
+        y += 16
 
         if self.paused:
-            _text(surf, self.font, '[ PAUSED ]', hx + hw // 2, y, SIG_YEL,
-                  anchor='midtop')
+            _text(surf, self.font, '[ PAUSED ]', hx + hw // 2, y, SIG_YEL, anchor='midtop')
         else:
-            spd_col = SIG_GRN if self.speed > 1 else TEXT_DIM
-            _text(surf, self.font_sm, f'Speed ×{self.speed}', hx + 10, y, spd_col)
-        y += 28
+            _text(surf, self.font_sm, f'Speed ×{self.speed}',
+                  hx + 8, y, SIG_GRN if self.speed > 1 else TEXT_DIM)
+        y += 24
 
         # Vehicle counts
+        pygame.draw.line(surf, DARK_GRAY, (hx + 6, y), (hx + hw - 6, y))
+        y += 6
         cts = self.engine.counts()
-        pygame.draw.line(surf, DARK_GRAY, (hx + 8, y), (hx + hw - 8, y))
-        y += 8
-        rows = [
+        for label, val, col in [
             ('Total',     cts['total'],   TEXT_C),
             ('Active',    cts['active'],  SIG_GRN),
             ('Pending',   cts['pending'], TEXT_DIM),
             ('Completed', cts['done'],    ACCENT),
-        ]
-        for label, val, col in rows:
-            _text(surf, self.font_sm, label,       hx + 10, y, TEXT_DIM)
-            _text(surf, self.font,   str(val),     hx + hw - 14, y, col, anchor='topright')
-            y += 22
-
-        # Per-intersection signal state
-        pygame.draw.line(surf, DARK_GRAY, (hx + 8, y + 4), (hx + hw - 8, y + 4))
-        y += 14
-        _text(surf, self.font_sm, 'Signals', hx + 10, y, TEXT_DIM)
-        y += 22
-        for iid, sig in self.engine.signals.signals.items():
-            phase_str = sig.active_phase
-            col = (SIG_GRN if 'GREEN' in phase_str else
-                   SIG_YEL if 'YELLOW' in phase_str else SIG_RED)
-            _text(surf, self.font_sm, f'{iid}  {phase_str}  {sig.time_remaining:.1f}s',
-                  hx + 10, y, col)
+        ]:
+            _text(surf, self.font_sm, label,    hx + 8,       y, TEXT_DIM)
+            _text(surf, self.font,    str(val),  hx + hw - 8,  y, col, anchor='topright')
             y += 20
 
-        # Per-intersection queue
-        pygame.draw.line(surf, DARK_GRAY, (hx + 8, y + 4), (hx + hw - 8, y + 4))
-        y += 14
-        _text(surf, self.font_sm, 'Queues', hx + 10, y, TEXT_DIM)
-        y += 22
-        for seg in self.engine.network.segments.values():
-            if seg.enters_intersection and seg.vehicles:
-                iid = seg.enters_intersection
-                _text(surf, self.font_sm,
-                      f'{seg.from_node}→{iid}: {len(seg.vehicles)}',
-                      hx + 10, y, TEXT_C)
-                y += 18
-                if y > hy + hh - 40:
-                    break
+        # Signals
+        pygame.draw.line(surf, DARK_GRAY, (hx + 6, y + 3), (hx + hw - 6, y + 3))
+        y += 12
+        _text(surf, self.font_sm, 'Signals', hx + 8, y, TEXT_DIM)
+        y += 18
+        for iid, sig in self.engine.signals.signals.items():
+            ph  = sig.active_phase
+            col = SIG_GRN if 'GREEN' in ph else (SIG_YEL if 'YELLOW' in ph else SIG_RED)
+            _text(surf, self.font_sm, f'{iid} {ph[:2]} {sig.time_remaining:.0f}s',
+                  hx + 8, y, col)
+            y += 18
+
+        # Selected intersection control panel
+        pygame.draw.line(surf, DARK_GRAY, (hx + 6, y + 3), (hx + hw - 6, y + 3))
+        y += 10
+        if self.iid_list:
+            sel_iid = self.iid_list[self.selected_idx]
+            sig     = self.engine.signals.signals[sel_iid]
+            ph      = sig.active_phase
+            sig_col = SIG_GRN if 'GREEN' in ph else (SIG_YEL if 'YELLOW' in ph else SIG_RED)
+            idx_num = self.selected_idx + 1
+            _text(surf, self.font_sm,
+                  f'Selected [{idx_num}]: {sel_iid}', hx + 8, y, ACCENT)
+            y += 18
+            _text(surf, self.font_sm, ph,                       hx + 8,       y, sig_col)
+            _text(surf, self.font_sm, f'{sig.time_remaining:.0f}s',
+                  hx + hw - 8, y, sig_col, anchor='topright')
+            y += 18
+            for seg in self.engine.network.segments.values():
+                if seg.enters_intersection == sel_iid:
+                    n     = len(seg.vehicles)
+                    q_col = SIG_RED if n >= 5 else (SIG_YEL if n >= 2 else TEXT_C)
+                    _text(surf, self.font_sm, f'  {seg.from_node}: {n}', hx + 8, y, q_col)
+                    y += 15
+            y += 4
 
         # Controls
-        pygame.draw.line(surf, DARK_GRAY, (hx + 8, y + 4), (hx + hw - 8, y + 4))
-        y += 14
-        for hint in ['P  pause', '+ / −  speed']:
-            _text(surf, self.font_sm, hint, hx + 10, y, TEXT_DIM)
-            y += 18
+        pygame.draw.line(surf, DARK_GRAY, (hx + 6, y + 3), (hx + hw - 6, y + 3))
+        y += 10
+        for hint in ['Click / 1-6: select', 'Tab: cycle intersect.',
+                     'N: force NS green', 'E: force EW green',
+                     'P: pause / resume', '+/−: speed']:
+            _text(surf, self.font_sm, hint, hx + 8, y, TEXT_DIM)
+            y += 15
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Pareto scatter plot helper
+# ──────────────────────────────────────────────────────────────────────
+
+def _draw_pareto(surf, font, font_sm, past_runs, current_idx, ox, oy, pw, ph):
+    """Scatter plot of all runs for this map+scenario with Pareto front."""
+    pygame.draw.rect(surf, UI_PANEL, (ox, oy, pw, ph), border_radius=6)
+    pygame.draw.rect(surf, GRAY,     (ox, oy, pw, ph), 1, border_radius=6)
+
+    _text(surf, font_sm, 'Performance vs. past runs  (this map & scenario)',
+          ox + pw // 2, oy + 8, TEXT_DIM, anchor='midtop')
+
+    n = len(past_runs)
+    if n < 2:
+        msg = 'Complete another run to see the comparison.' if n == 1 else 'No past runs yet.'
+        _text(surf, font_sm, msg, ox + pw // 2, oy + ph // 2, TEXT_DIM, anchor='center')
+        return
+
+    # Plot area margins
+    lm, rm, tm, bm = 48, 16, 28, 36
+    px0 = ox + lm
+    py0 = oy + tm + 16
+    pw2 = pw - lm - rm
+    ph2 = ph - tm - bm - 16
+
+    tps = [r['throughput'] for r in past_runs]
+    dls = [r['avg_delay']  for r in past_runs]
+    dl_max = max(max(dls) * 1.15, 30.0)
+
+    def to_sc(tp, dl):
+        sx = px0 + int(tp * pw2)
+        sy = py0 + ph2 - int((1.0 - dl / dl_max) * ph2)
+        return sx, sy
+
+    # Axes
+    pygame.draw.line(surf, GRAY, (px0, py0),       (px0,       py0 + ph2))
+    pygame.draw.line(surf, GRAY, (px0, py0 + ph2), (px0 + pw2, py0 + ph2))
+
+    # Axis tick labels
+    _text(surf, font_sm, '0%',   px0,        py0 + ph2 + 3, TEXT_DIM, anchor='midtop')
+    _text(surf, font_sm, '100%', px0 + pw2,  py0 + ph2 + 3, TEXT_DIM, anchor='midtop')
+    _text(surf, font_sm, 'Throughput  →',
+          ox + pw // 2, oy + ph - 18, TEXT_DIM, anchor='midtop')
+    _text(surf, font_sm, f'{int(dl_max)}s', px0 - 4, py0,        TEXT_DIM, anchor='midright')
+    _text(surf, font_sm, '0s',              px0 - 4, py0 + ph2,  TEXT_DIM, anchor='midright')
+    _text(surf, font_sm, '↑ low delay', ox + 6, oy + ph // 2, TEXT_DIM, anchor='midleft')
+
+    # Pareto front step-line
+    pf_idx  = pareto_indices(past_runs)
+    pf_runs = sorted([past_runs[i] for i in pf_idx], key=lambda r: r['throughput'])
+    if len(pf_runs) >= 2:
+        pts = []
+        for r in pf_runs:
+            pts.append(to_sc(r['throughput'], r['avg_delay']))
+        # step: go right, then up
+        step_pts = [pts[0]]
+        for i in range(1, len(pts)):
+            step_pts.append((pts[i][0], step_pts[-1][1]))
+            step_pts.append(pts[i])
+        pygame.draw.lines(surf, ACCENT, False, step_pts, 2)
+        # dots on Pareto front
+        for pt in pts:
+            pygame.draw.circle(surf, ACCENT, pt, 4)
+
+    # All non-current runs
+    for i, r in enumerate(past_runs):
+        if i == current_idx:
+            continue
+        sx, sy = to_sc(r['throughput'], r['avg_delay'])
+        col = ACCENT if i in pf_idx else TEXT_DIM
+        pygame.draw.circle(surf, col, (sx, sy), 3 if i in pf_idx else 2)
+
+    # Current run (bright)
+    if 0 <= current_idx < n:
+        cur = past_runs[current_idx]
+        sx, sy = to_sc(cur['throughput'], cur['avg_delay'])
+        pygame.draw.circle(surf, UI_BG, (sx, sy), 7)
+        pygame.draw.circle(surf, WHITE,  (sx, sy), 6)
+        pygame.draw.circle(surf, ACCENT, (sx, sy), 6, 2)
+
+    # Summary line
+    best_tp  = max(tps)
+    best_dl  = min(dls)
+    on_front = current_idx in pf_idx
+    tag      = '  ★ Pareto-optimal!' if on_front else ''
+    _text(surf, font_sm,
+          f'{n} runs · best TP {best_tp*100:.0f}% · best delay {best_dl:.0f}s{tag}',
+          ox + pw // 2, oy + ph - 4, WHITE if on_front else TEXT_DIM, anchor='midbottom')
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -424,12 +555,13 @@ class RunningScreen:
 # ──────────────────────────────────────────────────────────────────────
 
 class ResultsScreen:
-    def __init__(self, metrics: dict, font, font_sm, font_lg):
-        self.m       = metrics
-        self.font    = font
-        self.font_sm = font_sm
-        self.font_lg = font_lg
-        self.restart = False
+    def __init__(self, metrics, past_runs, font, font_sm, font_lg):
+        self.m         = metrics
+        self.past_runs = past_runs        # full list for this map+scenario
+        self.font      = font
+        self.font_sm   = font_sm
+        self.font_lg   = font_lg
+        self.restart   = False
 
     def handle_event(self, event):
         if event.type != pygame.KEYDOWN:
@@ -443,63 +575,83 @@ class ResultsScreen:
         surf.fill(UI_BG)
         m = self.m
 
-        _text(surf, self.font_lg, 'RESULTS', SCREEN_W // 2, 24, ACCENT, anchor='midtop')
+        _text(surf, self.font_lg, 'RESULTS', SCREEN_W // 2, 20, ACCENT, anchor='midtop')
 
-        # ── main KPIs ──
-        kpi_y = 90
-        kpi_w = 320
+        # ── KPI boxes (full width) ──────────────────────────────────────
+        kpi_y = 66
+        kpi_w = 240
+        kpi_h = 76
+        gap   = 14
 
-        def kpi(label, value_str, col, x, y):
-            pygame.draw.rect(surf, UI_PANEL, (x, y, kpi_w, 90), border_radius=8)
-            pygame.draw.rect(surf, col, (x, y, kpi_w, 90), 1, border_radius=8)
-            _text(surf, self.font_sm, label, x + kpi_w // 2, y + 10, TEXT_DIM, anchor='midtop')
-            _text(surf, self.font_lg, value_str, x + kpi_w // 2, y + 35, col, anchor='midtop')
+        def kpi(label, val_str, col, x, y):
+            pygame.draw.rect(surf, UI_PANEL, (x, y, kpi_w, kpi_h), border_radius=8)
+            pygame.draw.rect(surf, col,      (x, y, kpi_w, kpi_h), 1, border_radius=8)
+            _text(surf, self.font_sm, label,   x + kpi_w // 2, y + 8,  TEXT_DIM, anchor='midtop')
+            _text(surf, self.font_lg, val_str, x + kpi_w // 2, y + 30, col,      anchor='midtop')
 
-        throughput_pct = int(m['throughput'] * 100)
-        equity_pct     = int(m['equity'] * 100)
-        t_col = SIG_GRN if throughput_pct >= 70 else (SIG_YEL if throughput_pct >= 40 else SIG_RED)
-        e_col = SIG_GRN if equity_pct     >= 70 else (SIG_YEL if equity_pct     >= 40 else SIG_RED)
+        tp_pct = int(m['throughput'] * 100)
+        eq_pct = int(m['equity'] * 100)
+        t_col  = SIG_GRN if tp_pct >= 70 else (SIG_YEL if tp_pct >= 40 else SIG_RED)
+        e_col  = SIG_GRN if eq_pct >= 70 else (SIG_YEL if eq_pct >= 40 else SIG_RED)
 
-        kpi('Throughput',     f"{throughput_pct}%",         t_col, 50,  kpi_y)
-        kpi('Equity',         f"{equity_pct}%",             e_col, 390, kpi_y)
-        kpi('Avg Delay',      f"{m['avg_delay']:.1f} s",    ACCENT, 730, kpi_y)
-        kpi('Trips Completed', f"{m['completed']} / {m['total']}", TEXT_C, 1070, kpi_y)
+        total_w = 4 * kpi_w + 3 * gap
+        kpi_x0  = (SCREEN_W - total_w) // 2
 
-        # ── queue stats ──
-        y = kpi_y + 120
-        _text(surf, self.font, 'Residual queues at end of run:', 50, y, TEXT_C)
-        y += 30
+        kpi('Throughput', f'{tp_pct}%',                        t_col,  kpi_x0,                    kpi_y)
+        kpi('Equity',     f'{eq_pct}%',                        e_col,  kpi_x0 +   kpi_w + gap,    kpi_y)
+        kpi('Avg Delay',  f'{m["avg_delay"]:.1f} s',           ACCENT, kpi_x0 + 2*(kpi_w + gap),  kpi_y)
+        kpi('Trips Done', f'{m["completed"]} / {m["total"]}',  TEXT_C, kpi_x0 + 3*(kpi_w + gap),  kpi_y)
+
+        content_y = kpi_y + kpi_h + 18
+        content_h = SCREEN_H - content_y - 36
+
+        # ── Left column: queues + per-OD bars ──────────────────────────
+        LEFT_X  = 30
+        LEFT_W  = 470
+        y       = content_y
+
+        _text(surf, self.font, 'Residual queues:', LEFT_X, y, TEXT_C)
+        y += 24
         for iid, q in sorted(m['queue_stats'].items()):
-            bot = '  ← bottleneck' if iid == m['bottleneck'] else ''
-            col = SIG_RED if iid == m['bottleneck'] else TEXT_C
-            _text(surf, self.font_sm, f'  {iid}: {q} vehicles{bot}', 50, y, col)
-            y += 24
+            is_bot = (iid == m['bottleneck'])
+            col    = SIG_RED if is_bot else TEXT_C
+            suffix = '  ← bottleneck' if is_bot else ''
+            _text(surf, self.font_sm, f'  {iid}: {q} vehicles{suffix}', LEFT_X, y, col)
+            y += 18
 
-        # ── per-OD delay summary ──
-        y += 16
-        _text(surf, self.font, 'Per-OD delay sample (worst 8 pairs):', 50, y, TEXT_C)
-        y += 30
+        y += 10
+        _text(surf, self.font, 'Worst per-OD delays:', LEFT_X, y, TEXT_C)
+        y += 24
         od_sorted = sorted(
-            [(k, sum(v)/len(v)) for k, v in m['od_delays'].items() if v],
-            key=lambda x: -x[1]
+            [(k, sum(v) / len(v)) for k, v in m['od_delays'].items() if v],
+            key=lambda x: -x[1],
         )[:8]
+        bar_x  = LEFT_X + 90
+        bar_w  = LEFT_W - 90 - 52
         for (o, d), avg in od_sorted:
             bar_val = min(avg, 60.0)
-            col = _lerp_color(SIG_GRN, SIG_RED, bar_val / 60.0)
-            _text(surf, self.font_sm, f'{o}→{d}', 50, y, TEXT_DIM)
-            _bar(surf, 160, y + 2, 300, 16, bar_val, 60.0, col)
-            _text(surf, self.font_sm, f'{avg:.1f}s', 470, y, TEXT_C)
-            y += 26
-            if y > SCREEN_H - 80:
+            col     = _lerp_color(SIG_GRN, SIG_RED, bar_val / 60.0)
+            _text(surf, self.font_sm, f'{o}→{d}', LEFT_X, y, TEXT_DIM)
+            _bar(surf, bar_x, y + 2, bar_w, 13, bar_val, 60.0, col)
+            _text(surf, self.font_sm, f'{avg:.0f}s', bar_x + bar_w + 6, y, TEXT_C)
+            y += 20
+            if y > content_y + content_h:
                 break
 
-        # ── restart hint ──
-        _text(surf, self.font, 'Press R or ENTER to play again  |  ESC to quit',
-              SCREEN_W // 2, SCREEN_H - 40, TEXT_DIM, anchor='midtop')
+        # ── Right column: Pareto scatter ────────────────────────────────
+        RIGHT_X = LEFT_X + LEFT_W + 20
+        RIGHT_W = SCREEN_W - RIGHT_X - 16
+        _draw_pareto(surf, self.font, self.font_sm,
+                     self.past_runs, len(self.past_runs) - 1,
+                     RIGHT_X, content_y, RIGHT_W, content_h)
+
+        # ── Footer ──────────────────────────────────────────────────────
+        _text(surf, self.font, 'R / ENTER → play again    ESC → quit',
+              SCREEN_W // 2, SCREEN_H - 28, TEXT_DIM, anchor='midtop')
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Application loop
+# Main application loop
 # ──────────────────────────────────────────────────────────────────────
 
 def run():
@@ -508,12 +660,14 @@ def run():
     pygame.display.set_caption('Traffic Signal Network Simulation')
     clock = pygame.time.Clock()
 
-    font_lg = pygame.font.Font(None, 48)
-    font    = pygame.font.Font(None, 30)
-    font_sm = pygame.font.Font(None, 22)
+    font_lg = pygame.font.Font(None, 44)
+    font    = pygame.font.Font(None, 28)
+    font_sm = pygame.font.Font(None, 20)
+
+    car_images = _load_car_images()
 
     while True:
-        # ── PRERUN ──
+        # ── PRE-RUN ──────────────────────────────────────────────────
         pre = PreRunScreen(font, font_sm, font_lg)
         while not pre.done:
             clock.tick(FPS)
@@ -524,11 +678,11 @@ def run():
             pre.draw(screen)
             pygame.display.flip()
 
-        # ── BUILD ENGINE ──
-        engine  = SimulationEngine(timing=pre.timing, scenario=pre.scenario)
-        running = RunningScreen(engine, font, font_sm, font_lg)
+        # ── BUILD ENGINE ─────────────────────────────────────────────
+        engine  = SimulationEngine(map_name=pre.map_name, scenario=pre.scenario)
+        running = RunningScreen(engine, font, font_sm, font_lg, car_images)
 
-        # ── RUNNING ──
+        # ── RUNNING ──────────────────────────────────────────────────
         while not engine.done:
             clock.tick(FPS)
             for ev in pygame.event.get():
@@ -539,13 +693,13 @@ def run():
             running.draw(screen)
             pygame.display.flip()
 
-        # Draw one last frame with final state
         running.draw(screen)
         pygame.display.flip()
-        pygame.time.wait(600)
+        pygame.time.wait(500)
 
-        # ── RESULTS ──
-        results = ResultsScreen(engine.metrics, font, font_sm, font_lg)
+        # ── RESULTS ──────────────────────────────────────────────────
+        past_runs = save_run(pre.map_name, pre.scenario, engine.metrics)
+        results   = ResultsScreen(engine.metrics, past_runs, font, font_sm, font_lg)
         while not results.restart:
             clock.tick(FPS)
             for ev in pygame.event.get():
