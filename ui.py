@@ -217,55 +217,55 @@ class PreRunScreen:
               60, 110, WHITE)
 
         # Signal timing panel  (4 intersection columns)
-        col_w  = 280
-        col_xs = [60 + i * col_w for i in range(4)]
-        row_y0 = 170
+        col_w  = 240
+        col_xs = [16 + i * col_w for i in range(4)]
+        row_y0 = 155
 
         for ci, iid in enumerate(INTERSECTIONS):
             cx = col_xs[ci]
             is_sel = (ci == self.cur_int)
             panel_color = HIGHLIGHT if is_sel else UI_PANEL
-            pygame.draw.rect(surf, panel_color, (cx - 8, row_y0 - 8,
-                                                  col_w - 16, 200), border_radius=6)
+            pygame.draw.rect(surf, panel_color, (cx - 6, row_y0 - 6,
+                                                  col_w - 10, 185), border_radius=6)
             pygame.draw.rect(surf, ACCENT if is_sel else GRAY,
-                             (cx - 8, row_y0 - 8, col_w - 16, 200), 1, border_radius=6)
+                             (cx - 6, row_y0 - 6, col_w - 10, 185), 1, border_radius=6)
 
-            _text(surf, self.font, iid, cx + 10, row_y0 + 4,
+            _text(surf, self.font, iid, cx + 8, row_y0 + 4,
                   ACCENT if is_sel else TEXT_C)
 
             for fi, (label, fkey, fmin, fmax, fstep) in enumerate(FIELDS):
-                fy = row_y0 + 44 + fi * 48
+                fy = row_y0 + 38 + fi * 44
                 is_field_sel = is_sel and (fi == self.cur_field)
                 fc = WHITE if is_field_sel else TEXT_DIM
                 val = self.timing[iid][fkey]
 
-                _text(surf, self.font_sm, label, cx + 10, fy, fc)
+                _text(surf, self.font_sm, label, cx + 8, fy, fc)
                 # value box
-                vbox_x = cx + 148
-                pygame.draw.rect(surf, DARK_GRAY, (vbox_x, fy - 2, 56, 24),
+                vbox_x = cx + 128
+                pygame.draw.rect(surf, DARK_GRAY, (vbox_x, fy - 2, 50, 22),
                                  border_radius=3)
                 if is_field_sel:
-                    pygame.draw.rect(surf, ACCENT, (vbox_x, fy - 2, 56, 24), 1,
+                    pygame.draw.rect(surf, ACCENT, (vbox_x, fy - 2, 50, 22), 1,
                                      border_radius=3)
-                _text(surf, self.font, str(val), vbox_x + 28, fy + 10,
+                _text(surf, self.font, str(val), vbox_x + 25, fy + 9,
                       ACCENT if is_field_sel else WHITE, anchor='center')
                 # bar
-                _bar(surf, cx + 10, fy + 28, col_w - 40, 6,
+                _bar(surf, cx + 8, fy + 26, col_w - 30, 5,
                      val - fmin, fmax - fmin, ACCENT)
 
         # Controls hint
         hints = [
-            '← / →   select intersection',
-            '↑ / ↓   select field',
-            '+  /  −   change value',
-            'S         cycle scenario',
-            'ENTER   start simulation',
+            '← / →  select intersection',
+            '↑ / ↓  select field',
+            '+  /  −  change value',
+            'S  cycle scenario',
+            'ENTER  start',
         ]
         for i, h in enumerate(hints):
-            _text(surf, self.font_sm, h, 60, 400 + i * 26, TEXT_DIM)
+            _text(surf, self.font_sm, h, 16, 370 + i * 24, TEXT_DIM)
 
         # Mini network preview (static)
-        self._draw_mini_network(surf, 820, 380)
+        self._draw_mini_network(surf, 680, 360)
 
     def _draw_mini_network(self, surf, ox, oy):
         """Tiny static preview of the 4-intersection grid."""

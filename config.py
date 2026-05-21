@@ -4,31 +4,31 @@ HORIZON = 60.0
 MAX_STEPS = int(HORIZON / DT)
 
 # Display
-SCREEN_W = 1400
-SCREEN_H = 800
+SCREEN_W = 1100
+SCREEN_H = 680
 FPS = 30
 STEPS_PER_FRAME = 1   # simulation steps per rendered frame (3x real-time at 30fps)
 
 # Network geometry
 PIXELS_PER_METER = 8.0
-LANE_OFFSET_PX = 9          # pixels from road centre to lane centre
-INTERSECTION_HALF_PX = 48   # half-size of intersection box in pixels
+LANE_OFFSET_PX = 8          # pixels from road centre to lane centre
+INTERSECTION_HALF_PX = 40   # half-size of intersection box in pixels
 INTERSECTION_HALF_M = INTERSECTION_HALF_PX / PIXELS_PER_METER
 
-# Node pixel centres
+# Node pixel centres  (network area = x:0-880, y:0-680; HUD at x:882-1098)
 NODE_PIXELS = {
-    'I1': (350,  200),
-    'I2': (1050, 200),
-    'I3': (350,  600),
-    'I4': (1050, 600),
-    'TL': (350,  35),
-    'TR': (1050, 35),
-    'LT': (35,   200),
-    'LB': (35,   600),
-    'RT': (1365, 200),
-    'RB': (1365, 600),
-    'BL': (350,  765),
-    'BR': (1050, 765),
+    'I1': (260,  175),
+    'I2': (780,  175),
+    'I3': (260,  490),
+    'I4': (780,  490),
+    'TL': (260,   28),
+    'TR': (780,   28),
+    'LT': ( 28,  175),
+    'LB': ( 28,  490),
+    'RT': (875,  175),
+    'RB': (875,  490),
+    'BL': (260,  645),
+    'BR': (780,  645),
 }
 
 INTERSECTION_NODES = {'I1', 'I2', 'I3', 'I4'}
