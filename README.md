@@ -94,3 +94,7 @@ Scores are stored in `scores.json` and accumulate across sessions (up to 300 run
 ## License
 
 No license yet. Please contact the authors (Alessandro Maisano + Fei Fan) for any question or issue!
+
+Emails: amaisano@student.ethz.ch ; fanfei@student.ethz.ch
+
+This project was developed as part of the ETH Zurich course "101-0720-00G Computer Programming & Data Science – An Introduction with Python FS2026", coordinated and led by Dr. K. Riehl, Dr. M. Balac, M.Sc. J. Schlapbach.
